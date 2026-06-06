@@ -45,3 +45,4 @@ reports/
 # OS
 .DS_Store
 Thumbs.db
+.claude/settings.json

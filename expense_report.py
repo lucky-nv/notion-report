@@ -39,7 +39,7 @@ REPORTS_DIR.mkdir(exist_ok=True)
 NOTION_API_URL = "https://api.notion.com/v1"
 HEADERS = {
     "Authorization": f"Bearer {NOTION_API_KEY}",
-    "Notion-Version": "2024-02-15",
+    "Notion-Version": "2022-06-28",
     "Content-Type": "application/json",
 }
 
@@ -169,12 +169,7 @@ def fetch_notion_data():
                 date_str = (
                     properties.get("Ngày", {}).get("date", {}).get("start", "")
                 )
-                amount_str = properties.get("Số tiền", {}).get("rich_text", [])
-                amount = (
-                    amount_str[0].get("plain_text", "")
-                    if amount_str
-                    else ""
-                )
+                amount = properties.get("Số tiền", {}).get("number")
                 category = (
                     properties.get("Hạng mục", {}).get("select", {}).get("name", "Khác")
                     if properties.get("Hạng mục", {}).get("select")
@@ -185,12 +180,18 @@ def fetch_notion_data():
                     if properties.get("Người nhập", {}).get("select")
                     else ""
                 )
+                loai = (
+                    properties.get("Loại", {}).get("select", {}).get("name", "Chi tiêu")
+                    if properties.get("Loại", {}).get("select")
+                    else "Chi tiêu"
+                )
 
-                if date_str and amount:
+                if date_str and amount is not None:
                     all_data.append(
                         {
                             "date": datetime.strptime(date_str, "%Y-%m-%d"),
-                            "amount": parse_currency(amount),
+                            "amount": float(amount) if amount else 0,
+                            "type": loai,
                             "category": category,
                             "person": person,
                         }
