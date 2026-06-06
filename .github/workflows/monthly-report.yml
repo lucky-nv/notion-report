@@ -2,8 +2,8 @@ name: Monthly Expense Report
 
 on:
   schedule:
-    # Chạy vào lúc 09:00 UTC (16:00 Việt Nam) ngày 1 hàng tháng
-    - cron: '0 9 1 * *'
+    # Chạy vào lúc 09:00 Việt Nam (02:00 UTC) ngày 1 hàng tháng
+    - cron: '0 2 1 * *'
 
   # Cho phép chạy thủ công từ Actions tab
   workflow_dispatch:
