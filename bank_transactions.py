@@ -118,35 +118,23 @@ def parse_hsbc_email(subject, body):
         transaction["date"] = datetime.now().strftime("%Y-%m-%d")
 
     # Extract merchant/location (pattern: "tại MERCHANT_NAME vào ngày")
-    merchant_match = re.search(r"tại\s+([A-Z\s]+?)\s+vào\s+ngày", body, re.IGNORECASE)
+    merchant_match = re.search(r"tại\s+(.+?)\s+vào\s+ngày", body, re.IGNORECASE)
     if merchant_match:
-        transaction["merchant"] = merchant_match.group(1).strip()
-    else:
-        # Try to find all-caps words as fallback
-        caps_match = re.search(r"[A-Z\s]{5,}", body)
-        if caps_match:
-            transaction["merchant"] = caps_match.group(0).strip()[:50]
+        merchant = merchant_match.group(1).strip()
+        transaction["merchant"] = merchant if merchant else None
+
+    if not transaction.get("merchant"):
+        transaction["merchant"] = None
 
     # Determine transaction type from subject
     transaction["type"] = "Chi tiêu"  # Default to expense
     if "hoàn tiền" in subject.lower() or "refund" in subject.lower():
         transaction["type"] = "Hoàn tiền"
 
-    # Category mapping based on merchant name
-    merchant_name = transaction.get("merchant", "").lower()
-    category = "💳 Khác"  # Default category
-    if any(word in merchant_name for word in ["mall", "store", "shop", "aeon", "vinmart"]):
-        category = "🛒 Mua sắm"
-    elif any(word in merchant_name for word in ["restaurant", "cafe", "quán", "nhà hàng", "ăn"]):
-        category = "🍽️ Ăn uống"
-    elif any(word in merchant_name for word in ["fuel", "gas", "petrol", "xăng", "dầu"]):
-        category = "⛽ Xăng dầu"
-    elif any(word in merchant_name for word in ["hospital", "clinic", "pharmacy", "bệnh viện", "nhà thuốc"]):
-        category = "⚕️ Y tế"
-
-    transaction["category"] = category
+    # Category mapping using shared function
+    transaction["category"] = _get_transaction_category(transaction.get("merchant", ""))
     transaction["person"] = "Chồng"  # Default person (can be extended based on rules)
-    transaction["description"] = subject.replace("[TB/Alert]", "").strip()
+    transaction["description"] = "HSBC Transaction"  # Default description
     transaction["notes"] = f"HSBC Merchant: {transaction.get('merchant', 'Unknown')}"
 
     return transaction
@@ -214,58 +202,126 @@ def _extract_vietcombank_merchant(body, transaction_type="transfer"):
             print(f"        Merchant: {merchant}")
             return merchant
     else:
-        # Extract account number from "Tài khoản người hưởng"
-        account_match = re.search(
-            r"Tài khoản người hưởng.*?<td[^>]*>\s*([A-Z0-9]{6,})", body, re.IGNORECASE | re.DOTALL
-        )
-        account = account_match.group(1).strip() if account_match else ""
+        # Try to extract beneficiary name from various field names in HTML table format
+        # Prioritize Beneficiary Name (cleaner data) over Payment Details
+        patterns = [
+            # Pattern 1: "Tên người hưởng" (Beneficiary Name) - cleanest data
+            r"Tên người hưởng[\s\S]*?</td>\s*<td[^>]*>\s*([\s\S]*?)\s*</td>",
+            # Pattern 2: "Beneficiary Name" (English version)
+            r"Beneficiary Name[\s\S]*?</td>\s*<td[^>]*>\s*([\s\S]*?)\s*</td>",
+            # Pattern 3: "Nội dung chuyển tiền" (Details of Payment) - fallback
+            r"Nội dung chuyển tiền[\s\S]*?</td>\s*<td[^>]*>\s*([\s\S]*?)\s*</td>",
+            # Pattern 4: "Details of Payment" (English fallback)
+            r"Details of Payment[\s\S]*?</td>\s*<td[^>]*>\s*([\s\S]*?)\s*</td>",
+        ]
 
-        # Extract beneficiary name from "Tên người hưởng"
-        name_match = re.search(
-            r"Tên người hưởng.*?<td[^>]*>\s*([A-Z][A-Z\s()]+)", body, re.IGNORECASE | re.DOTALL
-        )
-        name = name_match.group(1).strip() if name_match else ""
+        for pattern in patterns:
+            match = re.search(pattern, body, re.IGNORECASE)
+            if match:
+                merchant = match.group(1).strip()
+                # Remove HTML tags
+                merchant = re.sub(r'<[^>]+>', '', merchant)
+                # Remove HTML entities
+                merchant = merchant.replace('&nbsp;', ' ')
+                merchant = merchant.replace('&lt;', '<')
+                merchant = merchant.replace('&gt;', '>')
+                # Normalize whitespace
+                merchant = re.sub(r'\s+', ' ', merchant).strip()
 
-        if account or name:
-            result = f"{account} | {name}".strip(" |")
-            print(f"        Merchant: {result}")
-            return result
+                if merchant and len(merchant) > 2:  # Avoid very short matches
+                    print(f"        Merchant: {merchant}")
+                    return merchant
 
     print("        ⚠️  No merchant found")
     return ""
 
 
-def _get_vietcombank_category(merchant_name):
-    """Determine transaction category based on merchant name"""
+def _get_transaction_category(merchant_name):
+    """Smart category detection using keyword scoring and pattern matching"""
+    if not merchant_name:
+        return "💳 Khác"
+
     merchant_lower = merchant_name.lower()
 
-    # Shopping & online
-    if any(word in merchant_lower for word in ["shop", "store", "mall", "aeon", "vinmart", "amazon", "digitalocean", "apple"]):
-        return "🛒 Mua sắm"
-    # Dining
-    elif any(word in merchant_lower for word in ["restaurant", "cafe", "food", "quán", "nhà hàng", "ăn"]):
-        return "🍽️ Ăn uống"
-    # Fuel
-    elif any(word in merchant_lower for word in ["fuel", "gas", "petrol", "xăng", "dầu"]):
-        return "⛽ Xăng dầu"
-    # Travel
-    elif any(word in merchant_lower for word in ["hotel", "airline", "flight", "khách sạn", "bay"]):
-        return "✈️ Du lịch"
-    # Healthcare
-    elif any(word in merchant_lower for word in ["hospital", "clinic", "pharmacy", "bệnh viện", "nhà thuốc"]):
-        return "⚕️ Y tế"
-    # E-wallet
-    elif any(word in merchant_lower for word in ["momo", "zalopay", "apple pay", "google pay"]):
-        return "📱 Ví điện tử"
-    # Housing
-    elif any(word in merchant_lower for word in ["rent", "nhà", "cho thuê", "tiền nhà"]):
-        return "🏠 Thuê nhà"
-    # Debt
-    elif any(word in merchant_lower for word in ["loan", "vay", "nợ"]):
-        return "💰 Trả nợ"
-    # Insurance
-    elif any(word in merchant_lower for word in ["insurance", "bảo hiểm"]):
-        return "🛡️ Bảo hiểm"
+    # Category rules with comprehensive keywords from real transaction data
+    categories = {
+        "🛒 Mua sắm": {
+            "keywords": ["shop", "store", "mall", "aeon", "vinmart", "amazon", "digitalocean", "apple",
+                        "shopping", "retail", "market", "supermarket", "outlet", "lazada", "shopee",
+                        "tiki", "sendo", "fashion", "clothing", "footwear", "electronics", "gadget",
+                        "furniture", "wincommerce", "bach hoa", "bách hóa", "tung dat"],
+            "score": 10
+        },
+        "🍽️ Ăn uống": {
+            "keywords": ["restaurant", "cafe", "coffee", "food", "quán", "nhà hàng", "ăn", "drink",
+                        "pizza", "burger", "noodle", "pho", "bánh", "cơm", "trà", "nước", "beer",
+                        "bar", "pub", "bistro", "dining", "ca phe", "dang ca phe", "coffee shop", "fast food"],
+            "score": 10
+        },
+        "⛽ Xăng dầu": {
+            "keywords": ["fuel", "gas", "petrol", "xăng", "dầu", "shell", "bp", "esso", "caltex",
+                        "petrolimex", "gas station", "filling station"],
+            "score": 10
+        },
+        "✈️ Du lịch": {
+            "keywords": ["hotel", "airline", "flight", "khách sạn", "bay", "booking", "agoda",
+                        "resort", "motel", "hostel", "airbnb", "travel", "tour", "railway"],
+            "score": 10
+        },
+        "⚕️ Y tế": {
+            "keywords": ["hospital", "clinic", "pharmacy", "bệnh viện", "nhà thuốc", "doctor",
+                        "medical", "health", "dental", "dentist", "vaccine", "drug store",
+                        "phòng khám", "klinik", "thuốc", "y tế"],
+            "score": 10
+        },
+        "📱 Ví điện tử": {
+            "keywords": ["momo", "zalopay", "apple pay", "google pay", "paypal", "stripe",
+                        "e-wallet", "ewallet", "digital wallet", "topup", "recharge"],
+            "score": 10
+        },
+        "🏠 Thuê nhà": {
+            "keywords": ["rent", "nhà", "cho thuê", "tiền nhà", "apartment", "landlord",
+                        "real estate", "accommodation", "property"],
+            "score": 10
+        },
+        "💰 Trả nợ": {
+            "keywords": ["loan", "vay", "nợ", "credit", "lending", "mortgage", "debt"],
+            "score": 10
+        },
+        "🛡️ Bảo hiểm": {
+            "keywords": ["insurance", "bảo hiểm", "policy", "claim", "coverage"],
+            "score": 10
+        },
+        "📚 Sách & Học tập": {
+            "keywords": ["book", "sách", "nhà sách", "bookstore", "nhasach", "school", "education",
+                        "university", "course", "học"],
+            "score": 10
+        },
+        "🎮 Giải trí & Game": {
+            "keywords": ["game", "tro choi", "trò chơi", "gaming", "entertainment", "cinema", "movie",
+                        "phuc nguyen", "điện tử"],
+            "score": 10
+        },
+    }
+
+    # Score each category based on keyword matches
+    scores = {}
+    for category, rules in categories.items():
+        score = 0
+        for keyword in rules["keywords"]:
+            if keyword in merchant_lower:
+                # Higher score for exact word match vs substring match
+                if f" {keyword} " in f" {merchant_lower} " or merchant_lower.startswith(keyword) or merchant_lower.endswith(keyword):
+                    score += rules["score"]
+                else:
+                    score += rules["score"] // 2
+
+        if score > 0:
+            scores[category] = score
+
+    # Return category with highest score
+    if scores:
+        return max(scores, key=scores.get)
 
     return "💳 Khác"
 
@@ -293,9 +349,10 @@ def parse_vietcombank_email(subject, body):
 
     # Set common fields
     transaction["type"] = "Chi tiêu"
-    transaction["category"] = _get_vietcombank_category(merchant)
+    transaction["category"] = _get_transaction_category(merchant)
     transaction["person"] = "Chồng"
-    transaction["notes"] = f"VCB - {merchant}"
+    transaction["notes"] = merchant
+    transaction["description"] = "Vietcombank Transaction"
 
 
     print(f"        Parsed Vietcombank transaction - Merchant: {merchant} | Amount: {transaction['amount']:,.0f} | Date: {transaction['date']} | Category: {transaction['category']}")
@@ -319,8 +376,63 @@ def parse_bank_email(subject, body):
     return None
 
 
-def fetch_emails(days=1):
-    """Fetch bank transaction emails from Gmail"""
+def save_raw_emails_cache(raw_emails):
+    """Save raw email data (subject + body) to local cache"""
+    cache_file = LOGS_DIR / "raw_emails_cache.json"
+    try:
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(raw_emails, f, ensure_ascii=False, indent=2)
+        print(f"💾 Cached {len(raw_emails)} raw emails to {cache_file}")
+    except Exception as e:
+        print(f"⚠️  Failed to save raw email cache: {e}")
+
+
+def load_raw_emails_cache():
+    """Load previously cached raw email data"""
+    cache_file = LOGS_DIR / "raw_emails_cache.json"
+    if cache_file.exists():
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                emails = json.load(f)
+                print(f"📂 Loaded {len(emails)} cached raw emails from {cache_file}")
+                return emails
+        except Exception as e:
+            print(f"⚠️  Failed to load raw email cache: {e}")
+    return None
+
+
+def process_raw_emails(raw_emails):
+    """Process cached raw emails and extract transactions"""
+    transactions = []
+    for idx, email_data in enumerate(raw_emails, 1):
+        subject = email_data.get("subject", "")
+        body = email_data.get("body", "")
+        sender = email_data.get("sender", "")
+
+        print(f"\n{idx}. {subject[:60]}...")
+        transaction = parse_bank_email(subject, body)
+
+        if transaction is None:
+            print("        ⏭️  Skipped by parser")
+        elif transaction.get("amount", 0) <= 0:
+            print(f"        ⏭️  Skipped: Amount is {transaction.get('amount', 0)}")
+        else:
+            transaction["sender"] = sender
+            transaction["subject"] = subject
+            transactions.append(transaction)
+            print(f"        ✅ Parsed successfully - Category: {transaction.get('category', 'N/A')} | Date: {transaction.get('date', 'N/A')}")
+
+    return transactions
+
+
+def fetch_emails(days=1, use_cache=True):
+    """Fetch bank transaction emails from Gmail or cache"""
+    # Check for cached raw emails first
+    if use_cache:
+        cached_raw_emails = load_raw_emails_cache()
+        if cached_raw_emails:
+            return process_raw_emails(cached_raw_emails)
+
     print("📧 Connecting to Gmail...")
     try:
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
@@ -360,8 +472,9 @@ def fetch_emails(days=1):
         if not message_ids:
             print("ℹ️  No emails from bank senders found")
         else:
-            print(f"🔍 Processing {len(message_ids)} emails...")
+            print(f"🔍 Fetching {len(message_ids)} emails...")
 
+            raw_emails = []
             for idx, message_id in enumerate(message_ids, 1):
                 try:
                     _, msg_data = mail.fetch(message_id, "(RFC822)")
@@ -372,26 +485,24 @@ def fetch_emails(days=1):
                     body = get_email_body(msg)
                     sender = msg.get("From", "")
 
-                    transaction = parse_bank_email(subject, body)
-
-                    if transaction is None:
-                        print("        ⏭️  Skipped by parser")
-                    elif transaction.get("amount", 0) <= 0:
-                        print(f"        ⏭️  Skipped: Amount is {transaction.get('amount', 0)}")
-                    else:
-                        transaction["sender"] = sender
-                        transaction["subject"] = subject
-                        transactions.append(transaction)
-                        print(f"        ✅ Parsed successfully - Category: {transaction.get('category', 'N/A')} | Date: {transaction.get('date', 'N/A')}")
-                        print(f"        📋 {json.dumps(transaction, ensure_ascii=False, indent=2)}")
+                    # Store raw email data
+                    raw_emails.append({
+                        "subject": subject,
+                        "body": body,
+                        "sender": sender
+                    })
+                    print(f"  {idx}. {subject[:60]}...")
 
                 except Exception as e:
-                    print(f"  ⚠️  Error parsing email: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    print(f"  ⚠️  Error fetching email: {e}")
                     continue
 
-            print(f"\n📊 Parsed {len(transactions)} valid transactions")
+            if raw_emails:
+                print(f"\n💾 Saving {len(raw_emails)} raw emails to cache...")
+                save_raw_emails_cache(raw_emails)
+                print(f"\n🔍 Processing {len(raw_emails)} emails...")
+                transactions = process_raw_emails(raw_emails)
+                print(f"\n📊 Parsed {len(transactions)} valid transactions")
 
     finally:
         mail.close()
@@ -440,10 +551,17 @@ def transaction_exists(transaction_date, merchant, amount):
 def create_notion_transaction(transaction):
     """Create a new transaction in Notion database"""
     try:
+        # Skip if merchantis "BUI VAN ANH" or "NGUYEN VAN QUANG" (self-transfers)
+        if transaction.get("merchant", "").upper() in ["BUI VAN ANH", "NGUYEN VAN QUANG", "MOMO_NGUYEN VAN QUANG"]:
+            print(f"      ⏭️  Skipped self-transfer transaction: {transaction['date']} - ₫{transaction.get('amount', 0):,.0f}")
+            return False
+        
         # Skip if transaction already exists
         print(f"      🔍 Checking if exists: {transaction['date']} - ₫{transaction.get('amount', 0):,.0f}")
         if transaction_exists(transaction["date"], transaction.get("merchant", ""), transaction.get("amount", 0)):
             return False
+        
+
 
         # Build title and note
         title = transaction.get("description", "Bank Transaction")[:100]
@@ -530,12 +648,16 @@ def main():
     validate_config()
 
     # Fetch emails from last 1 day
-    transactions = fetch_emails(days=30)
+    transactions = fetch_emails(days=2, use_cache=True)
 
     if not transactions:
         print("ℹ️  No new transactions found")
         print("=" * 60)
         return
+    
+    print("\n📋 Transactions to import:")
+    for t in transactions:
+        print(json.dumps(t, ensure_ascii=False, indent=2))
     
     
 
