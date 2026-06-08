@@ -1,0 +1,49 @@
+name: Daily Bank Transaction Import
+
+on:
+  schedule:
+    # Run at 08:00 Vietnam time (01:00 UTC) daily
+    - cron: '0 1 * * *'
+
+  # Allow manual triggering from Actions tab
+  workflow_dispatch:
+
+jobs:
+  import-transactions:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create .env file from secrets
+        run: |
+          cat > .env << EOF
+          NOTION_API_KEY=${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID=${{ secrets.NOTION_DATABASE_ID }}
+          GMAIL_EMAIL=${{ secrets.GMAIL_EMAIL }}
+          GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}
+          TIMEZONE=${{ secrets.TIMEZONE || 'Asia/Ho_Chi_Minh' }}
+          EOF
+
+      - name: Import bank transactions
+        run: python bank_transactions.py
+
+      - name: Upload logs as artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bank-import-logs
+          path: logs/
+          retention-days: 30
