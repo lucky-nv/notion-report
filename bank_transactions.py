@@ -369,7 +369,7 @@ def parse_bank_email(subject, body):
         return parse_hsbc_email(subject, body)
 
     # Check for Vietcombank (handles both card transactions and payment receipts)
-    if any(keyword in subject_lower for keyword in ["giao dịch thẻ", "card transaction", "vietcombank", "biên lai chuyển tiền", "payment receipt"]):
+    if any(keyword in subject_lower for keyword in ["giao dịch thẻ", "card transaction", "vietcombank", "biên lai chuyển tiền", "biên lai thanh toán", "payment receipt"]):
         return parse_vietcombank_email(subject, body)
 
     # Add more bank parsers here as needed
@@ -425,7 +425,7 @@ def process_raw_emails(raw_emails):
     return transactions
 
 
-def fetch_emails(days=1, use_cache=True):
+def fetch_emails(days=1, use_cache=True, save_cache=True):
     """Fetch bank transaction emails from Gmail or cache"""
     # Check for cached raw emails first
     if use_cache:
@@ -498,8 +498,9 @@ def fetch_emails(days=1, use_cache=True):
                     continue
 
             if raw_emails:
-                print(f"\n💾 Saving {len(raw_emails)} raw emails to cache...")
-                save_raw_emails_cache(raw_emails)
+                if save_cache:
+                    print(f"\n💾 Saving {len(raw_emails)} raw emails to cache...")
+                    save_raw_emails_cache(raw_emails)
                 print(f"\n🔍 Processing {len(raw_emails)} emails...")
                 transactions = process_raw_emails(raw_emails)
                 print(f"\n📊 Parsed {len(transactions)} valid transactions")
@@ -648,7 +649,7 @@ def main():
     validate_config()
 
     # Fetch emails from last 1 day
-    transactions = fetch_emails(days=2, use_cache=True)
+    transactions = fetch_emails(days=2, use_cache=False, save_cache=False)
 
     if not transactions:
         print("ℹ️  No new transactions found")
