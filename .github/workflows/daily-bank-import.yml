@@ -2,8 +2,8 @@ name: Daily Bank Transaction Import
 
 on:
   schedule:
-    # Run at 08:00 Vietnam time (01:00 UTC) daily
-    - cron: '0 1 * * *'
+    # Run at 00:00 Vietnam time (17:00 UTC) daily
+    - cron: '0 17 * * *'
 
   # Allow manual triggering from Actions tab
   workflow_dispatch:
