@@ -99,6 +99,7 @@ def load_csv_data(filepath="sample_data.csv"):
                 loai = str(row.get("Loại", "Chi tiêu")).strip()
                 category = str(row.get("Hạng mục", "Khác"))
                 person = str(row.get("Người nhập", ""))
+                notes = str(row.get("Note", "")) or str(row.get("Ghi chú", ""))
 
                 if date_str and amount_str and date_str != "nan":
                     # Try different date formats
@@ -118,6 +119,7 @@ def load_csv_data(filepath="sample_data.csv"):
                                 "type": loai if loai.lower() in ["chi tiêu", "thu nhập"] else "Chi tiêu",
                                 "category": category.strip() if category != "nan" else "Khác",
                                 "person": person.strip() if person != "nan" else "Unknown",
+                                "notes": notes.strip() if notes != "nan" else "",
                             }
                         )
             except Exception as e:
@@ -164,7 +166,12 @@ def fetch_notion_data():
         results = data.get("results", [])
 
         for item in results:
-            properties = item.get("properties", {})
+            if not item:
+                continue
+            properties = item.get("properties")
+            if not properties:
+                continue
+
             try:
                 date_str = (
                     properties.get("Ngày", {}).get("date", {}).get("start", "")
@@ -185,6 +192,22 @@ def fetch_notion_data():
                     if properties.get("Loại", {}).get("select")
                     else "Chi tiêu"
                 )
+                # Extract notes from "Note" or "Ghi chú" field
+                notes = ""
+                for field_name in ["Note", "Ghi chú"]:
+                    notes_field = properties.get(field_name, {})
+                    if notes_field:
+                        # Try rich_text field
+                        rich_text = notes_field.get("rich_text", [])
+                        if rich_text and isinstance(rich_text, list):
+                            notes = "".join([t.get("text", {}).get("content", "") for t in rich_text])
+                            if notes:
+                                break
+                        # Try text field
+                        elif notes_field.get("text"):
+                            notes = notes_field.get("text", {}).get("content", "")
+                            if notes:
+                                break
 
                 if date_str and amount is not None:
                     all_data.append(
@@ -194,10 +217,10 @@ def fetch_notion_data():
                             "type": loai,
                             "category": category,
                             "person": person,
+                            "notes": notes,
                         }
                     )
-            except Exception as e:
-                print(f"⚠️ Error parsing item: {e}")
+            except Exception:
                 continue
 
         if data.get("has_more"):
@@ -636,7 +659,155 @@ def create_html_report(data, chart_files, for_email=True):
     return html
 
 
-def send_email(html_content, chart_files):
+def generate_pdf(df, data):
+    """Generate PDF report with transaction list"""
+    print("📄 Generating PDF report...")
+
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    # Register Unicode font for Vietnamese support
+    font_name = 'Helvetica'
+    try:
+        # Try Arial Unicode (macOS)
+        font_paths = [
+            "/Library/Fonts/Arial Unicode.ttf",
+            "/System/Library/Fonts/Arial.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ]
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                pdfmetrics.registerFont(TTFont('VietFont', font_path))
+                font_name = 'VietFont'
+                break
+    except Exception:
+        font_name = 'Helvetica'
+
+    # Get current month data
+    current_month = data['current_month']
+    current_df = df[df['year_month'] == pd.Period(current_month, freq='M')].copy()
+    current_df = current_df.sort_values('date', ascending=False)
+
+    if current_df.empty:
+        print("⚠️ No transactions for current month, skipping PDF")
+        return None
+
+    # Create PDF
+    pdf_path = REPORTS_DIR / f"transactions_{current_month}.pdf"
+    doc = SimpleDocTemplate(
+        str(pdf_path),
+        pagesize=A4,
+        rightMargin=0.5*inch,
+        leftMargin=0.5*inch,
+        topMargin=0.5*inch,
+        bottomMargin=0.5*inch,
+    )
+
+    elements = []
+    styles = getSampleStyleSheet()
+
+    # Title
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=16,
+        textColor=colors.HexColor('#1f4788'),
+        spaceAfter=6,
+        alignment=TA_CENTER,
+    )
+    title = Paragraph(f"📊 TRANSACTION LIST - {current_month}", title_style)
+    elements.append(title)
+    elements.append(Spacer(1, 0.2*inch))
+
+    # Summary
+    summary_style = ParagraphStyle(
+        'Summary',
+        parent=styles['Normal'],
+        fontSize=10,
+        textColor=colors.HexColor('#333333'),
+        spaceAfter=4,
+    )
+
+    expense_total = current_df[current_df['type'].str.lower() == 'chi tiêu']['amount'].sum()
+    income_total = current_df[current_df['type'].str.lower() == 'thu nhập']['amount'].sum()
+    net = income_total - expense_total
+
+    summary_text = f"""
+    <b>Summary for {current_month}:</b><br/>
+    Income: <b>₫{income_total:,.0f}</b> | Expense: <b>₫{expense_total:,.0f}</b> | Balance: <b>₫{net:,.0f}</b>
+    """
+    elements.append(Paragraph(summary_text, summary_style))
+    elements.append(Spacer(1, 0.15*inch))
+
+    # Transaction table
+    table_data = [['Date', 'Type', 'Category', 'Person', 'Amount', 'Notes']]
+
+    for _, row in current_df.iterrows():
+        date_str = row['date'].strftime('%d/%m/%Y')
+        amount_str = f"₫{row['amount']:,.0f}"
+        notes = row.get('notes', '')
+        table_data.append([
+            date_str,
+            row['type'],
+            row['category'],
+            row['person'] or '-',
+            amount_str,
+            notes or '-',
+        ])
+
+    # Create table with 6 columns (added Ghi chú)
+    col_widths = [0.9*inch, 1.0*inch, 1.2*inch, 1.0*inch, 1.0*inch, 1.4*inch]
+    table = Table(table_data, colWidths=col_widths)
+
+    # Style table with proper font for Vietnamese
+    table_style = [
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1f4788')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('ALIGN', (-1, 1), (-1, -1), 'RIGHT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),  # Use built-in font for header
+        ('FONTSIZE', (0, 0), (-1, 0), 9),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+        ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+        ('FONTNAME', (0, 1), (-1, -1), font_name),  # Use Vietnamese font for body
+        ('FONTSIZE', (0, 1), (-1, -1), 8),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f9f9f9')]),
+        ('TOPPADDING', (0, 1), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 1), (-1, -1), 4),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+    ]
+    table.setStyle(TableStyle(table_style))
+
+    elements.append(table)
+    elements.append(Spacer(1, 0.2*inch))
+
+    # Footer
+    footer_style = ParagraphStyle(
+        'Footer',
+        parent=styles['Normal'],
+        fontSize=8,
+        textColor=colors.grey,
+        alignment=TA_CENTER,
+    )
+    footer = Paragraph(
+        f"Report generated on {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+        footer_style
+    )
+    elements.append(footer)
+
+    # Build PDF
+    doc.build(elements)
+    print(f"✅ PDF saved to: {pdf_path}")
+    return pdf_path
+
+
+def send_email(html_content, chart_files, pdf_file=None):
     """Send email report"""
     print("📧 Sending email report...")
 
@@ -659,6 +830,16 @@ def send_email(html_content, chart_files):
             part.add_header("Content-Disposition", f"inline; filename= {chart_file.name}")
             part.add_header("Content-ID", f"<chart{i}>")
             msg.attach(part)
+
+    # Attach PDF file if available
+    if pdf_file:
+        with open(pdf_file, "rb") as attachment:
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(attachment.read())
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", f"attachment; filename={pdf_file.name}")
+            msg.attach(part)
+            print(f"📎 Attached PDF: {pdf_file.name}")
 
     # Send email
     try:
@@ -705,9 +886,12 @@ def main(demo_mode=False):
         f.write(html_report_email)
     print(f"💾 Email report saved to: {report_path}")
 
+    # Generate PDF with transaction list
+    pdf_file = generate_pdf(df, data)
+
     # Send email (skip in demo mode)
     if not demo_mode:
-        send_email(html_report_email, chart_files)
+        send_email(html_report_email, chart_files, pdf_file=pdf_file)
     else:
         print("⏭️  Email sending skipped in demo mode")
 
