@@ -1,0 +1,16 @@
+node_modules/
+dist/
+build/
+.wrangler/
+.env
+.env.local
+.env*.local
+*.log
+.DS_Store
+/.wrangler
+/wrangler.toml.bak
+wrangler.toml.orig
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
