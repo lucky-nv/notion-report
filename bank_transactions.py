@@ -524,6 +524,10 @@ def transaction_exists(transaction_date, merchant, amount):
                     {
                         "property": "Số tiền",
                         "number": {"equals": amount}
+                    },
+                    {
+                        "property": "Merchant",
+                        "rich_text": {"equals": merchant}
                     }
                 ]
             }
